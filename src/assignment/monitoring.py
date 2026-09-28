@@ -1,9 +1,4 @@
-"""
-Assignment 11 — Monitoring & Alerts starter (TODO).
-
-Tracks block rate, rate-limit hits, judge fail rate.
-Fires alerts when thresholds are exceeded.
-"""
+"""Metrics and threshold-based alerts for the defense pipeline."""
 from __future__ import annotations
 
 import json
@@ -34,7 +29,6 @@ class MonitoringAlert:
     judge_fail_rate_threshold: float = 0.3
     alerts: list[Alert] = field(default_factory=list)
 
-    # Counters — update these from your pipeline after each request
     total_requests: int = 0
     blocked_requests: int = 0
     rate_limit_hits: int = 0
@@ -42,16 +36,40 @@ class MonitoringAlert:
     judge_fails: int = 0
 
     def check_metrics(self) -> list[Alert]:
-        """TODO: compute rates, append Alert objects when thresholds exceeded."""
-        raise NotImplementedError("Implement MonitoringAlert.check_metrics")
+        """Recompute threshold alerts from the current counters."""
+        snapshot = self.snapshot()
+        alerts: list[Alert] = []
+        if snapshot["block_rate"] >= self.block_rate_threshold:
+            alerts.append(Alert(
+                metric="block_rate",
+                value=snapshot["block_rate"],
+                threshold=self.block_rate_threshold,
+                message="Blocked-request rate reached the configured threshold.",
+            ))
+        if self.rate_limit_hits >= self.rate_limit_hit_threshold:
+            alerts.append(Alert(
+                metric="rate_limit_hits",
+                value=float(self.rate_limit_hits),
+                threshold=float(self.rate_limit_hit_threshold),
+                message="Rate-limit hits reached the configured threshold.",
+            ))
+        if snapshot["judge_fail_rate"] >= self.judge_fail_rate_threshold:
+            alerts.append(Alert(
+                metric="judge_fail_rate",
+                value=snapshot["judge_fail_rate"],
+                threshold=self.judge_fail_rate_threshold,
+                message="Safety-judge failure rate reached the configured threshold.",
+            ))
+        self.alerts = alerts
+        return self.alerts
 
     def export_json(self, filepath: str | None = None):
-        """TODO: write metrics + alerts to JSON under repo-root ``outputs/`` by default.
-        Use ``filepath or default_metrics_path()`` so running from ``src/`` does not
-        create ``src/outputs/``.
-        """
-        _ = filepath or default_metrics_path()
-        raise NotImplementedError("Implement MonitoringAlert.export_json")
+        """Write metrics and current alerts under repo-root ``outputs/`` by default."""
+        self.check_metrics()
+        path = Path(filepath or default_metrics_path())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self.snapshot(), ensure_ascii=False, indent=2), encoding="utf-8")
+        return str(path)
 
     def snapshot(self) -> dict:
         block_rate = (
