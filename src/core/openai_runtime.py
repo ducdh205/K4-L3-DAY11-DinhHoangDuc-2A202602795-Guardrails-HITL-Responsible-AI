@@ -217,7 +217,7 @@ def create_openai_pair(
     temperature: float = 0.4,
     model: str | None = None,
 ) -> tuple[OpenAIAgent, OpenAIRunner]:
-    """Red Team OpenAI path (default = soft model; advance may pass harder)."""
+    """Red Team OpenAI/Groq path (default = configured model)."""
     return _make_pair(
         name=name,
         instruction=instruction,
