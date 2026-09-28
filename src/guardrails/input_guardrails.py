@@ -11,6 +11,7 @@ Status convention (không dùng True/False mơ hồ):
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Literal
 
 from google.genai import types
@@ -21,6 +22,43 @@ from core.config import ALLOWED_TOPICS, BLOCKED_TOPICS
 
 # Quyết định rõ ràng — tránh đảo nghĩa True/False
 InputStatus = Literal["ALLOW", "BLOCK"]
+
+# Format characters are invisible but are commonly used to split words such as
+# ``igno\u200bre`` so simple regex checks do not see the original phrase.
+_INVISIBLE_CHARACTERS = "\u200b\u200c\u200d\ufeff\u2060"
+
+
+def _normalise_text(text: str, *, strip_accents: bool = False) -> str:
+    """Return text in a stable form for deterministic policy checks.
+
+    NFKC folds compatibility forms, removes invisible format characters, and
+    makes all visible whitespace comparable. ``strip_accents`` is used for
+    topic keywords because the configured Vietnamese keywords are unaccented.
+    """
+    normalized = unicodedata.normalize("NFKC", text or "")
+    normalized = normalized.translate(str.maketrans("", "", _INVISIBLE_CHARACTERS))
+    if strip_accents:
+        normalized = "".join(
+            char
+            for char in unicodedata.normalize("NFKD", normalized)
+            if not unicodedata.combining(char)
+        )
+    return re.sub(r"\s+", " ", normalized).strip().casefold()
+
+
+_INJECTION_PATTERNS = (
+    r"\bignore\s+(?:all\s+)?(?:previous|above|prior)?\s*instructions?\b",
+    r"\b(?:disregard|forget)\s+(?:all\s+)?(?:previous\s+)?(?:instructions?|rules?|directives?)\b",
+    r"\byou\s+are\s+now\b",
+    r"\bsystem\s+prompt\b",
+    r"\breveal\s+(?:your\s+)?(?:instructions?|prompt)\b",
+    r"\bpretend\s+(?:that\s+)?you\s+are\b",
+    r"\bact\s+as\s+(?:an?\s+)?unrestricted\b",
+    r"\b(?:override|bypass)\s+(?:the\s+)?(?:system\s+)?(?:prompt|instructions?|rules?)\b",
+    r"\b(?:show|print|repeat)\s+(?:me\s+)?(?:your\s+)?(?:system\s+)?(?:prompt|instructions?)\b",
+    r"\b(?:bỏ|bo)\s+qua\s+(?:mọi\s+)?hướng\s+dẫn\b",
+    r"\btiết\s+lộ\s+(?:mật\s+khẩu|system\s*prompt|api\s*key)\b",
+)
 
 
 # ============================================================
@@ -51,14 +89,10 @@ def detect_injection(user_input: str) -> InputStatus:
     Returns:
         ``"BLOCK"`` if injection detected (chặn), ``"ALLOW"`` otherwise (cho qua).
     """
-    INJECTION_PATTERNS = [
-        # TODO: Add at least 5 regex patterns
-        # Example:
-        # r"ignore (all )?(previous|above) instructions",
-    ]
+    normalized_input = _normalise_text(user_input)
 
-    for pattern in INJECTION_PATTERNS:
-        if re.search(pattern, user_input, re.IGNORECASE):
+    for pattern in _INJECTION_PATTERNS:
+        if re.search(pattern, normalized_input, re.IGNORECASE):
             return "BLOCK"
     return "ALLOW"
 
@@ -84,14 +118,17 @@ def topic_filter(user_input: str) -> InputStatus:
         ``"BLOCK"`` = chặn (off-topic hoặc topic cấm).
         ``"ALLOW"`` = cho qua (câu banking hợp lệ).
     """
-    input_lower = user_input.lower()
+    input_lower = _normalise_text(user_input, strip_accents=True)
 
-    # TODO: Implement logic:
-    # 1. If input contains any blocked topic -> return "BLOCK"
-    # 2. If input doesn't contain any allowed topic -> return "BLOCK"
-    # 3. Otherwise -> return "ALLOW"
+    # Blocked content takes precedence even when it mentions banking (for
+    # example, "hack a bank account").
+    if any(topic.casefold() in input_lower for topic in BLOCKED_TOPICS):
+        return "BLOCK"
 
-    pass  # Replace with your implementation
+    if not any(topic.casefold() in input_lower for topic in ALLOWED_TOPICS):
+        return "BLOCK"
+
+    return "ALLOW"
 
 
 # ============================================================
@@ -144,14 +181,21 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         self.total_count += 1
         text = self._extract_text(user_message)
 
-        # TODO: Implement logic:
-        # 1. Call detect_injection(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 2. Call topic_filter(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 3. If both return "ALLOW": return None (let message through)
+        if detect_injection(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "I cannot process requests that try to override instructions. "
+                "I can help with VinBank banking questions."
+            )
 
-        pass  # Replace with your implementation
+        if topic_filter(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "I can only help with VinBank banking topics, such as accounts, "
+                "transfers, savings, loans, and credit cards."
+            )
+
+        return None
 
 
 # ============================================================
